@@ -36,7 +36,7 @@ venv\Scripts\activate  # Windows
 ### 3. 安装依赖
 
 ```bash
-pip install django psycopg2-binary
+pip install -r requirements.txt
 ```
 
 ### 4. 配置数据库
@@ -54,20 +54,15 @@ CREATE DATABASE personalservice;
 \q
 ```
 
-如需修改数据库配置，请编辑 `PersonalService/settings.py` 中的 `DATABASES` 设置：
+**重要提示**: 默认配置使用以下数据库参数（在 `PersonalService/settings.py` 中）：
 
-```python
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'personalservice',
-        'USER': 'postgres',
-        'PASSWORD': 'postgres',
-        'HOST': 'localhost',
-        'PORT': '5432',
-    }
-}
-```
+- 数据库名: `personalservice`
+- 用户: `postgres`
+- 密码: `postgres`
+- 主机: `localhost`
+- 端口: `5432`
+
+**推荐做法**: 为了安全起见，建议使用环境变量管理数据库凭据。请参考下面的"环境变量配置"章节。
 
 ### 5. 运行数据库迁移
 
@@ -171,31 +166,67 @@ python manage.py migrate
 
 ## 环境变量配置（推荐）
 
-为了提高安全性，建议使用环境变量管理敏感配置：
+⚠️ **安全提示**: 当前 `settings.py` 中的数据库密码是硬编码的，这在生产环境中存在安全风险。强烈建议使用环境变量管理敏感配置。
+
+### 方法一：使用 python-decouple（推荐）
 
 1. 安装 `python-decouple`:
    ```bash
    pip install python-decouple
    ```
 
-2. 创建 `.env` 文件：
+2. 将 `.env.example` 复制为 `.env` 并修改配置：
+   ```bash
+   cp .env.example .env
+   ```
+
+3. 编辑 `.env` 文件：
    ```
    SECRET_KEY=your-secret-key-here
    DEBUG=True
    DB_NAME=personalservice
    DB_USER=postgres
-   DB_PASSWORD=postgres
+   DB_PASSWORD=your-secure-password
    DB_HOST=localhost
    DB_PORT=5432
    ```
 
-3. 在 `settings.py` 中使用：
+4. 在 `settings.py` 中使用环境变量：
    ```python
    from decouple import config
    
    SECRET_KEY = config('SECRET_KEY')
    DEBUG = config('DEBUG', default=False, cast=bool)
+   
+   DATABASES = {
+       'default': {
+           'ENGINE': 'django.db.backends.postgresql',
+           'NAME': config('DB_NAME'),
+           'USER': config('DB_USER'),
+           'PASSWORD': config('DB_PASSWORD'),
+           'HOST': config('DB_HOST'),
+           'PORT': config('DB_PORT'),
+       }
+   }
    ```
+
+### 方法二：直接使用环境变量
+
+```python
+import os
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': os.getenv('DB_NAME', 'personalservice'),
+        'USER': os.getenv('DB_USER', 'postgres'),
+        'PASSWORD': os.getenv('DB_PASSWORD', 'postgres'),
+        'HOST': os.getenv('DB_HOST', 'localhost'),
+        'PORT': os.getenv('DB_PORT', '5432'),
+    }
+}
+```
+
 
 ## 部署注意事项
 

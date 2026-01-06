@@ -74,12 +74,14 @@ WSGI_APPLICATION = 'PersonalService.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
+# WARNING: For production, use environment variables instead of hardcoded credentials.
+# See README.md for environment variable configuration instructions.
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'personalservice',
         'USER': 'postgres',
-        'PASSWORD': 'postgres',
+        'PASSWORD': 'postgres',  # Change this in production!
         'HOST': 'localhost',
         'PORT': '5432',
     }
