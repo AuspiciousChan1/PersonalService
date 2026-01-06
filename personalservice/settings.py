@@ -22,12 +22,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
+# For production, set a strong SECRET_KEY in your .env file
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-!6%ie2zsa74w)xl8pr@+3dve^s$afzmg63(2%)407u+=-n4)v4')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=True, cast=bool)
 
 # Allow access from any host (external network access)
+# SECURITY NOTE: This is set to '*' to allow external access as per requirements.
+# For production, consider setting specific domain names in the ALLOWED_HOSTS environment variable.
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='*').split(',')
 
 
@@ -123,3 +126,8 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+
+# Default primary key field type
+# https://docs.djangoproject.com/en/6.0/ref/settings/#default-auto-field
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
