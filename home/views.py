@@ -1,4 +1,5 @@
 from django.shortcuts import render
+from django.views.decorators.csrf import csrf_exempt
 from .models import VisitorLog
 
 
@@ -12,18 +13,21 @@ def get_client_ip(request):
     return ip if ip else None
 
 
+@csrf_exempt
 def home(request):
     """Home page view that displays a welcome message and logs visitor info"""
     # Record visitor information
     ip_address = get_client_ip(request)
     user_agent = request.META.get('HTTP_USER_AGENT', '')
     path = request.path
+    method = request.method
     
     # Save visitor log to database
     VisitorLog.objects.create(
         ip_address=ip_address,
         user_agent=user_agent,
-        path=path
+        path=path,
+        method=method
     )
     
     return render(request, 'home/index.html')

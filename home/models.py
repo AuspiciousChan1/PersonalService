@@ -6,6 +6,7 @@ class VisitorLog(models.Model):
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     user_agent = models.TextField(null=True, blank=True)
     path = models.CharField(max_length=255, null=True, blank=True)
+    method = models.CharField(max_length=10, null=True, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
     
     class Meta:
