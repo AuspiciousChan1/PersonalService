@@ -13,7 +13,7 @@ def get_client_ip(request):
     return ip if ip else None
 
 
-@csrf_exempt
+@csrf_exempt  # Allow all HTTP methods without CSRF token for API-like usage
 def home(request):
     """Home page view that displays a welcome message and logs visitor info"""
     # Record visitor information
