@@ -2,6 +2,7 @@ from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from .models import VisitorLog
+import json
 
 
 def get_client_ip(request):
@@ -37,8 +38,7 @@ def home(request):
         params = dict(request.GET.items())
     elif request.method in ['POST', 'PUT', 'PATCH']:
         # Try to get JSON data first, fall back to form data
-        if request.content_type == 'application/json':
-            import json
+        if request.content_type and request.content_type.startswith('application/json'):
             try:
                 params = json.loads(request.body.decode('utf-8')) if request.body else {}
             except (json.JSONDecodeError, UnicodeDecodeError):
