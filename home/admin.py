@@ -1,3 +1,7 @@
+# home/admin.py
+#
+# This file is used to register models with the Django admin interface. It allows you to customize
+# how models are displayed and managed in the admin panel.
 from django.contrib import admin
 from .models import VisitorLog
 

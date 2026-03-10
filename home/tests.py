@@ -1,3 +1,7 @@
+# home/tests.py
+#
+# This file contains test cases for the home app. It is used to write and run tests to ensure
+# that the app's code is working correctly.
 from django.test import TestCase, Client
 from .models import VisitorLog
 import json

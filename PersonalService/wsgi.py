@@ -1,3 +1,7 @@
+# PersonalService/wsgi.py
+#
+# This file is the WSGI configuration for the project. It is used by the web server to serve the
+# Django application.
 """
 WSGI config for PersonalService project.
 

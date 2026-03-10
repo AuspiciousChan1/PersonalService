@@ -1,3 +1,7 @@
+# PersonalService/urls.py
+#
+# This file is the main URL configuration for the project. It defines the URL patterns for the project
+# and maps them to the corresponding views.
 """
 URL configuration for PersonalService project.
 

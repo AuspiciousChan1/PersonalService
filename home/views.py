@@ -1,5 +1,9 @@
+# home/views.py
+#
+# This file contains the views for the home app. Views are responsible for processing user requests
+# and returning responses, such as rendering a template or returning JSON data.
 from django.shortcuts import render
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from .models import VisitorLog
 import json

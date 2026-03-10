@@ -1,3 +1,7 @@
+# PersonalService/settings.py
+#
+# This file contains the settings for the Django project. It is used to configure the project,
+# such as the database connection, installed apps, middleware, and other project-level settings.
 """
 Django settings for PersonalService project.
 
@@ -23,9 +27,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-l(46qj=7+f&kofo-l&9sd*j8di8c&)vgos64*=^t9rjy6#1)n+'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -64,7 +68,7 @@ TEMPLATES = [
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
             ],
-        },
+        }
     },
 ]
 

@@ -1,3 +1,7 @@
+# home/models.py
+#
+# This file defines the database models for the home app. Models represent the data structure
+# of the application and are used to interact with the database.
 from django.db import models
 
 

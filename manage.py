@@ -1,4 +1,7 @@
 #!/usr/bin/env python
+# 启动服务命令示例
+# python manage.py runserver 8080
+# ngrok http 8080
 """Django's command-line utility for administrative tasks."""
 import os
 import sys

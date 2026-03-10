@@ -1,3 +1,7 @@
+# home/apps.py
+#
+# This file contains the configuration for the home app. It allows you to configure app-specific
+# settings and behavior.
 from django.apps import AppConfig
 
 
