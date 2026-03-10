@@ -3,13 +3,14 @@
 # This file contains the views for the home app. Views are responsible for processing user requests
 # and returning responses, such as rendering a template or returning JSON data.
 from django.shortcuts import render
-from django.http import JsonResponse, HttpResponse
+from django.http import JsonResponse, HttpRequest
 from django.views.decorators.csrf import csrf_exempt
 from .models import VisitorLog
 import json
+from typing import Optional
 
 
-def get_client_ip(request):
+def get_client_ip(request: HttpRequest) -> Optional[str]:
     """Get the client's IP address from the request"""
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
     if x_forwarded_for:
@@ -20,7 +21,7 @@ def get_client_ip(request):
 
 
 @csrf_exempt  # Allow all HTTP methods without CSRF token for API-like usage
-def home(request):
+def home(request: HttpRequest) -> JsonResponse:
     """Home page view that returns JSON response with visitor info and request parameters"""
     # Record visitor information
     ip_address = get_client_ip(request)
@@ -39,15 +40,16 @@ def home(request):
     # Collect request parameters
     params = {}
     if request.method == 'GET':
-        params = dict(request.GET.items())
+        params = request.GET.dict()
     elif request.method in ['POST', 'PUT', 'PATCH']:
         # Try to get JSON data first, fall back to form data
         if request.content_type and request.content_type.startswith('application/json'):
             try:
-                params = json.loads(request.body.decode('utf-8')) if request.body else {}
+                if request.body:
+                    params = json.loads(request.body.decode('utf-8'))
             except (json.JSONDecodeError, UnicodeDecodeError):
-                params = dict(request.POST.items())
-        else:
+                pass
+        if not params:
             params = dict(request.POST.items())
     
     # Return JSON response
