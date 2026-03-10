@@ -4,6 +4,7 @@
 # that the app's code is working correctly.
 from django.test import TestCase, Client
 from .models import VisitorLog
+from . import feishu_utils
 import json
 from unittest.mock import patch
 
@@ -133,6 +134,30 @@ class FeishuWebhookViewTestCase(TestCase):
 
     def setUp(self):
         self.client = Client()
+
+    @patch('home.feishu_utils._start_background_task')
+    def test_process_feishu_event_dispatches_background_task(self, mock_start_background_task):
+        payload = {
+            'schema': '2.0',
+            'header': {
+                'app_id': 'cli_a9255c608ff95cef',
+                'token': 'x6pyZiEINLzSiUCQKbvmEgl7hIp3ItUv',
+                'event_type': 'im.message.receive_v1'
+            },
+            'event': {
+                'message': {
+                    'message_type': 'text',
+                    'message_id': 'om_test',
+                    'chat_type': 'p2p',
+                    'content': json.dumps({'text': 'please install requests'})
+                }
+            }
+        }
+
+        dispatched = feishu_utils.process_feishu_event(payload)
+
+        self.assertTrue(dispatched)
+        mock_start_background_task.assert_called_once_with('om_test', 'please install requests')
 
     def test_get_request_reports_ready(self):
         response = self.client.get('/robot/feishu')

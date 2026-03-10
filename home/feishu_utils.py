@@ -1,5 +1,6 @@
 # home/feishu_utils.py
 import json
+import threading
 import requests
 from typing import Optional
 
@@ -13,6 +14,30 @@ FEISHU_APP_SECRET = 'nftmtZsZ9dIpaI2Glh7M4cp3fWM7PikW'
 FEISHU_VERIFICATION_TOKEN = 'x6pyZiEINLzSiUCQKbvmEgl7hIp3ItUv'
 FEISHU_API_URL = "https://open.feishu.cn/open-apis"
 agent = TaskAgent(ai_type=AiType.DEEPSEEK)
+
+
+def _run_task_agent_and_reply(message_id: str, text_content: str) -> None:
+    """Run the TaskAgent workflow and send the reply outside the webhook request thread."""
+    try:
+        execution_report = agent.execute_task_result(text_content)
+        reply_message(message_id, execution_report.final_report)
+        print(
+            f"TaskAgent statuses: "
+            f"{[result.status for result in execution_report.execution_results]}"
+        )
+    except Exception as e:
+        print(f"Background Feishu task failed: {e}")
+
+
+def _start_background_task(message_id: str, text_content: str) -> None:
+    """Dispatch TaskAgent work to a daemon thread so Feishu webhook returns immediately."""
+    worker = threading.Thread(
+        target=_run_task_agent_and_reply,
+        args=(message_id, text_content),
+        daemon=True,
+        name=f"feishu-task-{message_id}",
+    )
+    worker.start()
 
 
 def get_tenant_access_token() -> Optional[str]:
@@ -60,7 +85,7 @@ def reply_message(message_id: str, content: str):
         print(f"Error sending reply: {e}")
 
 
-def process_feishu_event(payload: dict):
+def process_feishu_event(payload: dict) -> bool:
     """
     Processes a validated Feishu event payload.
     :param payload: The JSON payload from Feishu.
@@ -90,13 +115,10 @@ def process_feishu_event(payload: dict):
                 # In Group chat, we check if there are mentions. 
                 is_mentioned = chat_type == 'p2p' or (chat_type == 'group' and mentions)
                 
-                if is_mentioned:
-                    execution_report = agent.execute_task_result(text_content)
-                    reply_message(message_id, execution_report.final_report)
-                    print(
-                        f"TaskAgent statuses: "
-                        f"{[result.status for result in execution_report.execution_results]}"
-                    )
+                if is_mentioned and message_id and text_content.strip():
+                    _start_background_task(message_id, text_content)
+                    return True
 
             except json.JSONDecodeError:
                 print("Failed to parse message content")
+    return False
