@@ -43,10 +43,10 @@ def _clear_recent_message_ids() -> None:
         _recent_message_id_set.clear()
 
 
-def _run_task_agent_and_reply(message_id: str, text_content: str) -> None:
+def _run_task_agent_and_reply(message_id: str, text_content: str, run_context: Optional[dict] = None) -> None:
     """Run the TaskAgent workflow and send the reply outside the webhook request thread."""
     try:
-        execution_report = agent.execute_task_result(text_content)
+        execution_report = agent.execute_task_result(text_content, run_context=run_context)
         reply_message(message_id, execution_report.final_report)
         print(
             f"TaskAgent statuses: "
@@ -56,11 +56,11 @@ def _run_task_agent_and_reply(message_id: str, text_content: str) -> None:
         print(f"Background Feishu task failed: {e}")
 
 
-def _start_background_task(message_id: str, text_content: str) -> None:
+def _start_background_task(message_id: str, text_content: str, run_context: Optional[dict] = None) -> None:
     """Dispatch TaskAgent work to a daemon thread so Feishu webhook returns immediately."""
     worker = threading.Thread(
         target=_run_task_agent_and_reply,
-        args=(message_id, text_content),
+        args=(message_id, text_content, run_context),
         daemon=True,
         name=f"feishu-task-{message_id}",
     )
@@ -128,9 +128,11 @@ def process_feishu_event(payload: dict) -> bool:
         message = event.get('message', {})
         message_type = message.get('message_type')
         message_id = message.get('message_id')
+        chat_id = message.get('chat_id')
         chat_type = message.get('chat_type')
         mentions = message.get('mentions', [])
-        
+        sender_open_id = event.get('sender', {}).get('sender_id', {}).get('open_id')
+
         # Check if it's a text message
         if message_type == 'text':
             try:
@@ -146,7 +148,15 @@ def process_feishu_event(payload: dict) -> bool:
                     if not _remember_message_id(message_id):
                         print(f"Duplicate Feishu message ignored: {message_id}")
                         return False
-                    _start_background_task(message_id, text_content)
+                    run_context = {
+                        'source_type': 'feishu',
+                        'message_id': message_id,
+                        'chat_id': chat_id,
+                        'chat_type': chat_type,
+                        'sender_open_id': sender_open_id,
+                        'mentions': mentions,
+                    }
+                    _start_background_task(message_id, text_content, run_context)
                     return True
 
             except json.JSONDecodeError:

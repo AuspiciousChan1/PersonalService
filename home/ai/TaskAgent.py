@@ -5,9 +5,11 @@ import contextlib
 import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
+from django.utils import timezone
 from home.ai.AiApi import AiApiFactory, AiType
 from home.ai.CodeReviewer import CodeReviewer
 from home.ai import Constants
+from home.models import TaskRun, TaskOutput
 
 
 FAILURE_MARKERS = (
@@ -61,6 +63,7 @@ class AgentExecutionReport:
     plan: dict
     execution_results: list[TaskExecutionResult]
     final_report: str
+    task_run_id: Optional[int] = None
 
 
 def _run_python_sandbox(code):
@@ -114,20 +117,131 @@ class TaskAgent:
         self.max_depth = max_depth
         self.max_recovery_attempts = max_recovery_attempts
         self.results_cache = {}
+        self.current_run: Optional[TaskRun] = None
+        self._output_sequence = 0
 
-    def execute_task_result(self, user_query: str) -> AgentExecutionReport:
-        initial_plan = self.decompose(user_query)
-        execution_results = self.execute_plan(initial_plan, return_structured=True)
-        final_report = self.summarize(user_query, execution_results)
-        return AgentExecutionReport(
-            user_query=user_query,
-            plan=initial_plan,
-            execution_results=execution_results,
-            final_report=final_report,
+    def _next_output_sequence(self) -> int:
+        self._output_sequence += 1
+        return self._output_sequence
+
+    def _persist_output(
+            self,
+            *,
+            stage: str,
+            status: str,
+            content: str,
+            display_text: str,
+            depth: int = 1,
+            task_id: Any = None,
+            tool: Optional[str] = None,
+            description: Optional[str] = None,
+            input_code: Optional[str] = None,
+            error_message: str = "",
+            recovery_attempts: int = 0,
+            used_llm_fallback: bool = False,
+            fallback: Optional[LlmFallbackResult] = None,
+            metadata: Optional[dict] = None,
+    ) -> None:
+        if not self.current_run:
+            return
+
+        TaskOutput.objects.create(
+            task_run=self.current_run,
+            sequence=self._next_output_sequence(),
+            stage=stage,
+            depth=depth,
+            task_id=str(task_id) if task_id is not None else None,
+            tool=tool,
+            description=description,
+            input_code=input_code,
+            status=status,
+            content=str(content),
+            display_text=str(display_text),
+            error_message=error_message,
+            recovery_attempts=recovery_attempts,
+            used_llm_fallback=used_llm_fallback,
+            fallback_can_replace_execution=(fallback.can_replace_execution if fallback else None),
+            fallback_answer=(fallback.answer if fallback else None),
+            fallback_raw_response=(fallback.raw_response if fallback else None),
+            metadata=metadata or {},
         )
 
-    def execute_task(self, user_query: str) -> str:
-        return self.execute_task_result(user_query).final_report
+    def _persist_task_result(self, task, result: TaskExecutionResult, depth: int, input_code: Optional[str] = None) -> None:
+        self._persist_output(
+            stage='execution',
+            status=result.status,
+            content=result.content,
+            display_text=result.display_text,
+            depth=depth,
+            task_id=result.task_id,
+            tool=result.tool,
+            description=result.description,
+            input_code=input_code if input_code is not None else task.get('code'),
+            error_message=result.error_message,
+            recovery_attempts=result.recovery_attempts,
+            used_llm_fallback=result.used_llm_fallback,
+            fallback=result.fallback,
+            metadata=result.metadata,
+        )
+
+    def _resolve_run_status(self, execution_results: list[TaskExecutionResult]) -> str:
+        if not execution_results:
+            return 'success'
+        return 'completed_with_failures' if any(result.status in FAILURE_STATUSES for result in execution_results) else 'success'
+
+    def _build_task_run_source_fields(self, run_context: Optional[dict]) -> dict:
+        run_context = run_context or {}
+        return {
+            'source_type': run_context.get('source_type'),
+            'source_message_id': run_context.get('message_id'),
+            'source_chat_id': run_context.get('chat_id'),
+            'source_sender_open_id': run_context.get('sender_open_id'),
+            'source_metadata': run_context,
+        }
+
+    def execute_task_result(self, user_query: str, run_context: Optional[dict] = None) -> AgentExecutionReport:
+        self.results_cache = {}
+        self._output_sequence = 0
+        self.current_run = TaskRun.objects.create(
+            user_query=user_query,
+            ai_type=self.ai_type.name,
+            status='running',
+            **self._build_task_run_source_fields(run_context),
+        )
+
+        try:
+            initial_plan = self.decompose(user_query)
+            self.current_run.initial_plan = initial_plan
+            self.current_run.save(update_fields=['initial_plan'])
+
+            execution_results = self.execute_plan(initial_plan, return_structured=True)
+            final_report = self.summarize(user_query, execution_results)
+
+            self.current_run.status = self._resolve_run_status(execution_results)
+            self.current_run.final_report = final_report
+            self.current_run.error_message = ''
+            self.current_run.finished_at = timezone.now()
+            self.current_run.save(update_fields=['status', 'final_report', 'error_message', 'finished_at'])
+
+            return AgentExecutionReport(
+                user_query=user_query,
+                plan=initial_plan,
+                execution_results=execution_results,
+                final_report=final_report,
+                task_run_id=self.current_run.pk,
+            )
+        except Exception as exc:
+            if self.current_run:
+                self.current_run.status = 'failed'
+                self.current_run.error_message = str(exc)
+                self.current_run.finished_at = timezone.now()
+                self.current_run.save(update_fields=['status', 'error_message', 'finished_at'])
+            raise
+        finally:
+            self.current_run = None
+
+    def execute_task(self, user_query: str, run_context: Optional[dict] = None) -> str:
+        return self.execute_task_result(user_query, run_context=run_context).final_report
 
     def call_deepseek(self, prompt, system_prompt=Constants.SYSTEM_PROMPT_PLANNER, think=True):
         instance = AiApiFactory.get(self.ai_type)
@@ -136,6 +250,17 @@ class TaskAgent:
     def decompose(self, request_text, current_depth=1):
         if current_depth > self.max_depth:
             print(f"达到最大深度 {self.max_depth}，停止拆解。")
+            self._persist_output(
+                stage='planning',
+                status='failed',
+                content='Max depth exceeded.',
+                display_text='达到最大深度，停止拆解。',
+                depth=current_depth,
+                tool='DeepSeek_LLM',
+                description=request_text,
+                error_message='Max depth exceeded.',
+                metadata={'current_depth': current_depth},
+            )
             return {"plan": []}
 
         print(f"层级 {current_depth}: 正在拆解任务 -> {request_text}...")
@@ -145,9 +270,31 @@ class TaskAgent:
             start_index = llm_response.index("{")
             end_index = llm_response.rindex("}") + 1
             plan_json_str = llm_response[start_index:end_index]
-            return json.loads(plan_json_str)
+            plan = json.loads(plan_json_str)
+            self._persist_output(
+                stage='planning',
+                status='success',
+                content=llm_response,
+                display_text=json.dumps(plan, ensure_ascii=False),
+                depth=current_depth,
+                tool='DeepSeek_LLM',
+                description=request_text,
+                metadata={'current_depth': current_depth, 'parsed_plan': plan},
+            )
+            return plan
         except (json.JSONDecodeError, ValueError):
             print("LLM 返回格式错误，尝试二次修正...")
+            self._persist_output(
+                stage='planning',
+                status='failed',
+                content=llm_response,
+                display_text=llm_response,
+                depth=current_depth,
+                tool='DeepSeek_LLM',
+                description=request_text,
+                error_message='LLM response is not valid JSON.',
+                metadata={'current_depth': current_depth},
+            )
             return {"plan": []}
 
     def _build_task_result(self, task, status, content, display_text=None, error_message="", recovery_attempts=0,
@@ -171,10 +318,10 @@ class TaskAgent:
             return result.status in FAILURE_STATUSES
         if isinstance(result, list):
             return any(self._is_failure_result(item) for item in result)
-        if not isinstance(result, str):
-            return False
-        lowered = result.lower()
-        return any(marker in lowered for marker in FAILURE_MARKERS)
+        if isinstance(result, str):
+            lowered = result.lower()
+            return any(marker in lowered for marker in FAILURE_MARKERS)
+        return False
 
     def _stringify_results(self, results) -> str:
         if isinstance(results, TaskExecutionResult):
@@ -367,7 +514,7 @@ class TaskAgent:
             print(f"  [Failure Handler] 识别为环境/复杂问题，执行补救计划 ({len(recovery_plan.get('plan', []))} 步)...")
             recovery_results = self.execute_plan(recovery_plan, current_depth + 1, return_structured=True)
             recovery_summary = self._stringify_results(recovery_results)
-            if not self._is_failure_result(recovery_results):
+            if not any(item.status in FAILURE_STATUSES for item in recovery_results):
                 return self._build_task_result(
                     task,
                     status="recovered",
@@ -421,7 +568,7 @@ class TaskAgent:
                 sub_plan = self.decompose(desc, current_depth=current_depth + 1)
                 sub_results = self.execute_plan(sub_plan, current_depth=current_depth + 1, return_structured=True)
                 summary = self._stringify_results(sub_results)
-                status = "failed" if self._is_failure_result(sub_results) else "success"
+                status = "failed" if any(item.status in FAILURE_STATUSES for item in sub_results) else "success"
                 result = self._build_task_result(
                     task,
                     status=status,
@@ -444,6 +591,7 @@ class TaskAgent:
                 result = self._build_task_result(task, status="failed", content=message, display_text=message, error_message=message)
 
             self.results_cache[task_id] = result
+            self._persist_task_result(task, result, depth=current_depth, input_code=code)
             execution_results.append(result)
 
         return execution_results if return_structured else [item.to_log_string() for item in execution_results]
@@ -455,7 +603,16 @@ class TaskAgent:
         print("\n[总结] 正在生成最终报告...")
 
         if not execution_results:
-            return "No tasks were executed."
+            final_report = "No tasks were executed."
+            self._persist_output(
+                stage='summary',
+                status='success',
+                content=final_report,
+                display_text=final_report,
+                tool='DeepSeek_LLM',
+                description=user_query,
+            )
+            return final_report
 
         context = self._stringify_results(execution_results)
 
@@ -469,11 +626,21 @@ class TaskAgent:
         If the request was to perform an action, confirm whether it was successful.
         """
 
-        return self.call_deepseek(
-            prompt,
-            system_prompt="You are a helpful assistant summarizing task results.",
-            think=True,
+        final_report = self.call_deepseek(
+             prompt,
+             system_prompt="You are a helpful assistant summarizing task results.",
+             think=True,
+         )
+        self._persist_output(
+            stage='summary',
+            status='success',
+            content=final_report,
+            display_text=final_report,
+            tool='DeepSeek_LLM',
+            description=user_query,
+            metadata={'execution_result_count': len(execution_results)},
         )
+        return final_report
 
 
 if __name__ == '__main__':

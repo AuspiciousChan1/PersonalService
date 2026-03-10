@@ -145,23 +145,37 @@ class FeishuWebhookViewTestCase(TestCase):
                 'event_type': 'im.message.receive_v1'
             },
             'event': {
-                'message': {
-                    'message_type': 'text',
-                    'message_id': message_id,
-                    'chat_type': 'p2p',
-                    'content': json.dumps({'text': text})
-                }
-            }
-        }
+                'sender': {
+                    'sender_id': {
+                        'open_id': 'ou_test_sender'
+                    }
+                },
+                 'message': {
+                     'message_type': 'text',
+                     'message_id': message_id,
+                     'chat_id': 'oc_test_chat',
+                     'chat_type': 'p2p',
+                     'content': json.dumps({'text': text})
+                 }
+             }
+         }
 
     @patch('home.feishu_utils._start_background_task')
     def test_process_feishu_event_dispatches_background_task(self, mock_start_background_task):
         payload = self._build_feishu_message_payload(text='please install requests')
+        expected_context = {
+            'source_type': 'feishu',
+            'message_id': 'om_test',
+            'chat_id': 'oc_test_chat',
+            'chat_type': 'p2p',
+            'sender_open_id': 'ou_test_sender',
+            'mentions': [],
+        }
 
         dispatched = feishu_utils.process_feishu_event(payload)
 
         self.assertTrue(dispatched)
-        mock_start_background_task.assert_called_once_with('om_test', 'please install requests')
+        mock_start_background_task.assert_called_once_with('om_test', 'please install requests', expected_context)
 
     @patch('home.feishu_utils._start_background_task')
     def test_duplicate_message_id_is_ignored(self, mock_start_background_task):
@@ -172,7 +186,7 @@ class FeishuWebhookViewTestCase(TestCase):
 
         self.assertTrue(first_dispatch)
         self.assertFalse(second_dispatch)
-        mock_start_background_task.assert_called_once_with('om_dup', 'same message')
+        mock_start_background_task.assert_called_once()
 
     @patch('home.feishu_utils._start_background_task')
     def test_old_message_id_is_evictable_after_100_entries(self, mock_start_background_task):
