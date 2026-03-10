@@ -3,12 +3,16 @@ import json
 import requests
 from typing import Optional
 
+from home.ai.AiApi import AiType
+from home.ai.TaskAgent import TaskAgent
+
 # --- Feishu App Constants ---
 # App Name: MessageRobot
 FEISHU_APP_ID = 'cli_a9255c608ff95cef'
 FEISHU_APP_SECRET = 'nftmtZsZ9dIpaI2Glh7M4cp3fWM7PikW'
 FEISHU_VERIFICATION_TOKEN = 'x6pyZiEINLzSiUCQKbvmEgl7hIp3ItUv'
 FEISHU_API_URL = "https://open.feishu.cn/open-apis"
+agent = TaskAgent(ai_type=AiType.DEEPSEEK)
 
 
 def get_tenant_access_token() -> Optional[str]:
@@ -88,8 +92,10 @@ def process_feishu_event(payload: dict):
                 
                 if is_mentioned:
                     # Construct the reply
-                    reply_text = f"{text_content}\n您好！"
-                    reply_message(message_id, reply_text)
+                    initial_plan = agent.decompose(text_content)
+                    execute_result = agent.execute_plan(initial_plan)
+                    final_report = agent.summarize(message, execute_result)
+                    reply_message(message_id, final_report)
                     
             except json.JSONDecodeError:
                 print("Failed to parse message content")
