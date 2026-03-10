@@ -91,11 +91,12 @@ def process_feishu_event(payload: dict):
                 is_mentioned = chat_type == 'p2p' or (chat_type == 'group' and mentions)
                 
                 if is_mentioned:
-                    # Construct the reply
-                    initial_plan = agent.decompose(text_content)
-                    execute_result = agent.execute_plan(initial_plan)
-                    final_report = agent.summarize(message, execute_result)
-                    reply_message(message_id, final_report)
-                    
+                    execution_report = agent.execute_task_result(text_content)
+                    reply_message(message_id, execution_report.final_report)
+                    print(
+                        f"TaskAgent statuses: "
+                        f"{[result.status for result in execution_report.execution_results]}"
+                    )
+
             except json.JSONDecodeError:
                 print("Failed to parse message content")

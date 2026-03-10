@@ -3,9 +3,64 @@ import subprocess
 import io
 import contextlib
 import re
+from dataclasses import dataclass, field
+from typing import Any, Optional
 from home.ai.AiApi import AiApiFactory, AiType
 from home.ai.CodeReviewer import CodeReviewer
 from home.ai import Constants
+
+
+FAILURE_MARKERS = (
+    "error",
+    "failed",
+    "exception",
+    "not found",
+    "timed out",
+    "blocked by codereviewer",
+    "unknown tool",
+    "auto-recovery failed",
+    "failure recovery failed",
+)
+SUCCESS_STATUSES = {"success", "recovered", "fallback_answered"}
+FAILURE_STATUSES = {"failed", "fallback_unresolved"}
+
+
+@dataclass
+class LlmFallbackResult:
+    attempted: bool
+    can_replace_execution: bool
+    original_error: str
+    answer: str = ""
+    raw_response: str = ""
+
+
+@dataclass
+class TaskExecutionResult:
+    task_id: Any
+    tool: str
+    description: str
+    status: str
+    content: str
+    display_text: str
+    error_message: str = ""
+    recovery_attempts: int = 0
+    used_llm_fallback: bool = False
+    fallback: Optional[LlmFallbackResult] = None
+    metadata: dict = field(default_factory=dict)
+
+    def to_log_string(self) -> str:
+        return f"Task {self.task_id} ({self.tool}): {self.display_text}"
+
+    def __str__(self) -> str:
+        return self.display_text
+
+
+@dataclass
+class AgentExecutionReport:
+    user_query: str
+    plan: dict
+    execution_results: list[TaskExecutionResult]
+    final_report: str
 
 
 def _run_python_sandbox(code):
@@ -24,13 +79,13 @@ def _run_python_sandbox(code):
         return f"Error executing code: {str(e)}"
 
 
+
 def _run_shell_command(command: str, ai_type: AiType) -> str:
     """
     执行经过审查的 Shell 命令
     """
     print(f"  [Shell] 准备执行: {command}")
 
-    # 使用 CodeReviewer 进行安全审查
     if not CodeReviewer.review_and_approve(command, ai_type):
         return "Command execution blocked by CodeReviewer."
 
@@ -42,7 +97,7 @@ def _run_shell_command(command: str, ai_type: AiType) -> str:
             check=True,
             capture_output=True,
             text=True,
-            timeout=60  # 增加超时时间
+            timeout=60
         )
         return result.stdout.strip()
     except subprocess.CalledProcessError as e:
@@ -54,10 +109,25 @@ def _run_shell_command(command: str, ai_type: AiType) -> str:
 
 
 class TaskAgent:
-    def __init__(self, ai_type: AiType = AiType.DEEPSEEK, max_depth=3):
+    def __init__(self, ai_type: AiType = AiType.DEEPSEEK, max_depth=4, max_recovery_attempts=5):
         self.ai_type = ai_type
         self.max_depth = max_depth
+        self.max_recovery_attempts = max_recovery_attempts
         self.results_cache = {}
+
+    def execute_task_result(self, user_query: str) -> AgentExecutionReport:
+        initial_plan = self.decompose(user_query)
+        execution_results = self.execute_plan(initial_plan, return_structured=True)
+        final_report = self.summarize(user_query, execution_results)
+        return AgentExecutionReport(
+            user_query=user_query,
+            plan=initial_plan,
+            execution_results=execution_results,
+            final_report=final_report,
+        )
+
+    def execute_task(self, user_query: str) -> str:
+        return self.execute_task_result(user_query).final_report
 
     def call_deepseek(self, prompt, system_prompt=Constants.SYSTEM_PROMPT_PLANNER, think=True):
         instance = AiApiFactory.get(self.ai_type)
@@ -75,34 +145,194 @@ class TaskAgent:
             start_index = llm_response.index("{")
             end_index = llm_response.rindex("}") + 1
             plan_json_str = llm_response[start_index:end_index]
-            plan = json.loads(plan_json_str)
-            return plan
+            return json.loads(plan_json_str)
         except (json.JSONDecodeError, ValueError):
             print("LLM 返回格式错误，尝试二次修正...")
             return {"plan": []}
 
-    def _handle_failure(self, task, error_msg, current_depth):
-        """
-        智能错误处理：
-        1. 简单错误 -> 修复代码
-        2. 环境/依赖错误 -> 生成补救计划 (Re-planning)
-        """
-        print(f"  [Failure Handler] 任务失败，正在分析原因并制定对策... 错误: {error_msg}...")
+    def _build_task_result(self, task, status, content, display_text=None, error_message="", recovery_attempts=0,
+                           used_llm_fallback=False, fallback=None, metadata=None):
+        return TaskExecutionResult(
+            task_id=task.get('task_id'),
+            tool=task.get('tool', ''),
+            description=task.get('description', ''),
+            status=status,
+            content=str(content),
+            display_text=display_text or str(content),
+            error_message=error_message,
+            recovery_attempts=recovery_attempts,
+            used_llm_fallback=used_llm_fallback,
+            fallback=fallback,
+            metadata=metadata or {},
+        )
 
-        if current_depth > self.max_depth + 2:  # 防止无限递归修复
-            return f"Failure recovery failed: Max depth exceeded. Original error: {error_msg}"
+    def _is_failure_result(self, result) -> bool:
+        if isinstance(result, TaskExecutionResult):
+            return result.status in FAILURE_STATUSES
+        if isinstance(result, list):
+            return any(self._is_failure_result(item) for item in result)
+        if not isinstance(result, str):
+            return False
+        lowered = result.lower()
+        return any(marker in lowered for marker in FAILURE_MARKERS)
 
-        task_desc = task.get('description')
-        original_code = task.get('code')
+    def _stringify_results(self, results) -> str:
+        if isinstance(results, TaskExecutionResult):
+            return results.to_log_string()
+        if isinstance(results, list):
+            return "; ".join(self._stringify_results(item) for item in results)
+        return str(results)
+
+    def _extract_recovery_plan(self, response: str):
+        if "```json" not in response:
+            return None
+        try:
+            start = response.index("```json") + 7
+            end = response.rindex("```")
+            plan_str = response[start:end].strip()
+            return json.loads(plan_str)
+        except Exception as e:
+            print(f"  [Failure Handler] 解析补救计划失败: {e}")
+            return None
+
+    def _extract_fixed_code(self, response: str):
+        code_match = re.search(r"```(?:code|python|bash)?\n(.*?)```", response, re.DOTALL)
+        if code_match:
+            return code_match.group(1).strip()
+        return None
+
+    def _should_fallback_to_llm(self, task, error_msg) -> bool:
+        if task.get('tool') == "DeepSeek_LLM":
+            return False
+        return bool(error_msg)
+
+    def _request_llm_fallback(self, task, error_msg, recovery_attempts) -> TaskExecutionResult:
+        prompt = f"""
+        A task failed after {recovery_attempts} automated recovery attempt(s).
+
+        Task Description: {task.get('description')}
+        Tool Used: {task.get('tool')}
+        Original Code/Command:
+        ```
+        {task.get('code')}
+        ```
+        Final Error Message:
+        {error_msg}
+
+        Decide whether this task can still be meaningfully addressed without actually executing code or shell commands.
+
+        Rules:
+        1. First line must be exactly one of:
+           CAN_RESOLVE_WITH_LLM: yes
+           CAN_RESOLVE_WITH_LLM: no
+        2. If yes, provide the best possible direct answer, corrected script/command, or manual workaround.
+        3. If the original task involved side effects or real execution, clearly state that execution did NOT happen and your answer is guidance only.
+        4. If no, explain briefly why real execution is still required.
+        """
+        try:
+            response = self.call_deepseek(
+                prompt,
+                system_prompt="You are a pragmatic fallback assistant who helps after tool execution fails.",
+                think=True,
+            )
+        except Exception as e:
+            fallback = LlmFallbackResult(
+                attempted=True,
+                can_replace_execution=False,
+                original_error=error_msg,
+                answer="",
+                raw_response=str(e),
+            )
+            message = (
+                f"Auto-recovery failed after {recovery_attempts} attempts. "
+                f"LLM fallback request also failed: {e}. Original error: {error_msg}"
+            )
+            return self._build_task_result(
+                task,
+                status="fallback_unresolved",
+                content=message,
+                display_text=message,
+                error_message=error_msg,
+                recovery_attempts=recovery_attempts,
+                used_llm_fallback=True,
+                fallback=fallback,
+            )
+
+        cleaned_response = response.strip()
+        first_line = cleaned_response.splitlines()[0].strip().lower() if cleaned_response else ""
+        remaining = cleaned_response.split("\n", 1)[1].strip() if "\n" in cleaned_response else cleaned_response
+
+        if first_line == "can_resolve_with_llm: yes":
+            fallback = LlmFallbackResult(
+                attempted=True,
+                can_replace_execution=True,
+                original_error=error_msg,
+                answer=remaining,
+                raw_response=cleaned_response,
+            )
+            message = (
+                f"Execution failed after {recovery_attempts} recovery attempt(s). "
+                f"Returned an LLM fallback answer instead; no real execution happened.\n{remaining}"
+            )
+            return self._build_task_result(
+                task,
+                status="fallback_answered",
+                content=remaining,
+                display_text=message,
+                error_message=error_msg,
+                recovery_attempts=recovery_attempts,
+                used_llm_fallback=True,
+                fallback=fallback,
+            )
+
+        llm_note = remaining if first_line == "can_resolve_with_llm: no" else cleaned_response
+        fallback = LlmFallbackResult(
+            attempted=True,
+            can_replace_execution=False,
+            original_error=error_msg,
+            answer=llm_note,
+            raw_response=cleaned_response,
+        )
+        message = (
+            f"Auto-recovery failed after {recovery_attempts} attempts. "
+            f"LLM fallback could not safely replace execution. Original error: {error_msg}\n{llm_note}"
+        )
+        return self._build_task_result(
+            task,
+            status="fallback_unresolved",
+            content=llm_note,
+            display_text=message,
+            error_message=error_msg,
+            recovery_attempts=recovery_attempts,
+            used_llm_fallback=True,
+            fallback=fallback,
+        )
+
+    def _handle_failure(self, task, error_msg, current_depth, attempt=1) -> TaskExecutionResult:
+        print(f"  [Failure Handler] 任务失败，正在分析原因并制定对策... 尝试次数: {attempt}, 错误: {error_msg}...")
+
+        if current_depth > self.max_depth + 2:
+            capped_error = f"Failure recovery failed: Max depth exceeded. Original error: {error_msg}"
+            if self._should_fallback_to_llm(task, capped_error):
+                return self._request_llm_fallback(task, capped_error, max(1, attempt - 1))
+            return self._build_task_result(task, status="failed", content=capped_error, display_text=capped_error,
+                                           error_message=capped_error, recovery_attempts=max(0, attempt - 1))
+
+        if attempt > self.max_recovery_attempts:
+            if self._should_fallback_to_llm(task, error_msg):
+                return self._request_llm_fallback(task, error_msg, self.max_recovery_attempts)
+            message = f"Auto-recovery failed after {self.max_recovery_attempts} attempts. Original error: {error_msg}"
+            return self._build_task_result(task, status="failed", content=message, display_text=message,
+                                           error_message=error_msg, recovery_attempts=self.max_recovery_attempts)
+
         tool = task.get('tool')
-
         prompt = f"""
         The following task failed during execution:
-        Task Description: {task_desc}
+        Task Description: {task.get('description')}
         Tool Used: {tool}
         Original Code/Command:
         ```
-        {original_code}
+        {task.get('code')}
         ```
         Error Message:
         {error_msg}
@@ -130,43 +360,49 @@ class TaskAgent:
 
         Return ONLY the content in one of the specified formats.
         """
-
         response = self.call_deepseek(prompt, system_prompt="You are an expert troubleshooter.", think=True)
 
-        # 尝试解析 JSON 补救计划
-        if "```json" in response:
-            try:
-                start = response.index("```json") + 7
-                end = response.rindex("```")
-                plan_str = response[start:end].strip()
-                recovery_plan = json.loads(plan_str)
+        recovery_plan = self._extract_recovery_plan(response)
+        if recovery_plan:
+            print(f"  [Failure Handler] 识别为环境/复杂问题，执行补救计划 ({len(recovery_plan.get('plan', []))} 步)...")
+            recovery_results = self.execute_plan(recovery_plan, current_depth + 1, return_structured=True)
+            recovery_summary = self._stringify_results(recovery_results)
+            if not self._is_failure_result(recovery_results):
+                return self._build_task_result(
+                    task,
+                    status="recovered",
+                    content=recovery_summary,
+                    display_text=recovery_summary,
+                    recovery_attempts=attempt,
+                    metadata={"recovery_plan": recovery_plan, "recovery_statuses": [item.status for item in recovery_results]},
+                )
+            return self._handle_failure(task, recovery_summary, current_depth + 1, attempt + 1)
 
-                print(
-                    f"  [Failure Handler] 识别为环境/复杂问题，执行补救计划 ({len(recovery_plan.get('plan', []))} 步)...")
-                # 递归执行补救计划
-                recovery_results = self.execute_plan(recovery_plan, current_depth + 1)
-
-                if isinstance(recovery_results, list):
-                    return "; ".join(recovery_results)
-                return recovery_results
-
-            except Exception as e:
-                print(f"  [Failure Handler] 解析补救计划失败: {e}")
-
-        # 尝试解析修复后的代码
-        code_match = re.search(r"```(?:code|python|bash)?\n(.*?)```", response, re.DOTALL)
-        if code_match:
-            fixed_code = code_match.group(1).strip()
+        fixed_code = self._extract_fixed_code(response)
+        if fixed_code:
             print(f"  [Failure Handler] 识别为代码错误，尝试执行修复后的代码...")
-
             if tool == "Python_Script":
-                return _run_python_sandbox(fixed_code)
+                retry_result = _run_python_sandbox(fixed_code)
             elif tool == "Shell_Command":
-                return _run_shell_command(fixed_code, self.ai_type)
+                retry_result = _run_shell_command(fixed_code, self.ai_type)
+            else:
+                retry_result = f"Unknown tool: {tool}"
 
-        return f"Auto-recovery failed. Original error: {error_msg}"
+            if not self._is_failure_result(retry_result):
+                return self._build_task_result(
+                    task,
+                    status="recovered",
+                    content=retry_result,
+                    display_text=retry_result,
+                    recovery_attempts=attempt,
+                    metadata={"fixed_code": fixed_code},
+                )
+            return self._handle_failure(task, retry_result, current_depth + 1, attempt + 1)
 
-    def execute_plan(self, plan, current_depth=1):
+        unusable_response_error = f"Auto-recovery response was unusable. Last known error: {error_msg}"
+        return self._handle_failure(task, unusable_response_error, current_depth + 1, attempt + 1)
+
+    def execute_plan(self, plan, current_depth=1, return_structured=False):
         tasks = plan.get("plan", [])
         if not tasks:
             return []
@@ -179,34 +415,38 @@ class TaskAgent:
             tool = task.get('tool')
             desc = task.get('description')
             code = task.get('code')
-
             print(f"\n[执行中] 任务 {task_id} (层级 {current_depth}): {desc}")
 
-            result = None
             if tool == "Decompose_Required":
                 sub_plan = self.decompose(desc, current_depth=current_depth + 1)
-                sub_results = self.execute_plan(sub_plan, current_depth=current_depth + 1)
-                result = "; ".join(sub_results) if isinstance(sub_results, list) else sub_results
-
+                sub_results = self.execute_plan(sub_plan, current_depth=current_depth + 1, return_structured=True)
+                summary = self._stringify_results(sub_results)
+                status = "failed" if self._is_failure_result(sub_results) else "success"
+                result = self._build_task_result(
+                    task,
+                    status=status,
+                    content=summary,
+                    display_text=summary,
+                    error_message=summary if status == "failed" else "",
+                    metadata={"sub_result_statuses": [item.status for item in sub_results]},
+                )
             elif tool == "Python_Script":
-                result = _run_python_sandbox(code)
+                raw_result = _run_python_sandbox(code)
+                result = self._handle_failure(task, raw_result, current_depth) if self._is_failure_result(raw_result) else self._build_task_result(task, status="success", content=raw_result, display_text=raw_result)
             elif tool == "Shell_Command":
-                result = _run_shell_command(code, self.ai_type)
+                raw_result = _run_shell_command(code, self.ai_type)
+                result = self._handle_failure(task, raw_result, current_depth) if self._is_failure_result(raw_result) else self._build_task_result(task, status="success", content=raw_result, display_text=raw_result)
             elif tool == "DeepSeek_LLM":
-                result = self.call_deepseek(desc, system_prompt="你是一个专业助手，请根据要求完成任务。", think=True)
+                raw_result = self.call_deepseek(desc, system_prompt="你是一个专业助手，请根据要求完成任务。", think=True)
+                result = self._build_task_result(task, status="success", content=raw_result, display_text=raw_result)
             else:
-                result = f"Unknown tool: {tool}"
-
-            # 失败检测与智能恢复
-            if isinstance(result, str) and (
-                    "Error" in result or "failed" in result or "Exception" in result or "not found" in result):
-                if tool in ["Python_Script", "Shell_Command"]:
-                    result = self._handle_failure(task, result, current_depth)
+                message = f"Unknown tool: {tool}"
+                result = self._build_task_result(task, status="failed", content=message, display_text=message, error_message=message)
 
             self.results_cache[task_id] = result
-            execution_results.append(f"Task {task_id} ({tool}): {result}")
+            execution_results.append(result)
 
-        return execution_results
+        return execution_results if return_structured else [item.to_log_string() for item in execution_results]
 
     def summarize(self, user_query, execution_results):
         """
@@ -217,10 +457,7 @@ class TaskAgent:
         if not execution_results:
             return "No tasks were executed."
 
-        if isinstance(execution_results, str):
-            context = execution_results
-        else:
-            context = "\n".join(execution_results)
+        context = self._stringify_results(execution_results)
 
         prompt = f"""
         User Request: {user_query}
@@ -232,16 +469,16 @@ class TaskAgent:
         If the request was to perform an action, confirm whether it was successful.
         """
 
-        return self.call_deepseek(prompt, system_prompt="You are a helpful assistant summarizing task results.",
-                                  think=True)
+        return self.call_deepseek(
+            prompt,
+            system_prompt="You are a helpful assistant summarizing task results.",
+            think=True,
+        )
 
 
 if __name__ == '__main__':
     agent = TaskAgent(ai_type=AiType.DEEPSEEK)
     # user_query = "分析一下目前的行情趋势并给我建议"
     user_query = "删除邮箱AuspiciousChan@qq.com的中所有Apple Developer发送的邮件。"
-    initial_plan = agent.decompose(user_query)
-    results = agent.execute_plan(initial_plan)
-
-    final_report = agent.summarize(user_query, results)
+    final_report = agent.execute_task(user_query)
     print(f"\n--- Final Report ---\n{final_report}")
