@@ -134,10 +134,10 @@ class FeishuWebhookViewTestCase(TestCase):
 
     def setUp(self):
         self.client = Client()
+        feishu_utils._clear_recent_message_ids()
 
-    @patch('home.feishu_utils._start_background_task')
-    def test_process_feishu_event_dispatches_background_task(self, mock_start_background_task):
-        payload = {
+    def _build_feishu_message_payload(self, message_id='om_test', text='hello'):
+        return {
             'schema': '2.0',
             'header': {
                 'app_id': 'cli_a9255c608ff95cef',
@@ -147,17 +147,48 @@ class FeishuWebhookViewTestCase(TestCase):
             'event': {
                 'message': {
                     'message_type': 'text',
-                    'message_id': 'om_test',
+                    'message_id': message_id,
                     'chat_type': 'p2p',
-                    'content': json.dumps({'text': 'please install requests'})
+                    'content': json.dumps({'text': text})
                 }
             }
         }
+
+    @patch('home.feishu_utils._start_background_task')
+    def test_process_feishu_event_dispatches_background_task(self, mock_start_background_task):
+        payload = self._build_feishu_message_payload(text='please install requests')
 
         dispatched = feishu_utils.process_feishu_event(payload)
 
         self.assertTrue(dispatched)
         mock_start_background_task.assert_called_once_with('om_test', 'please install requests')
+
+    @patch('home.feishu_utils._start_background_task')
+    def test_duplicate_message_id_is_ignored(self, mock_start_background_task):
+        payload = self._build_feishu_message_payload(message_id='om_dup', text='same message')
+
+        first_dispatch = feishu_utils.process_feishu_event(payload)
+        second_dispatch = feishu_utils.process_feishu_event(payload)
+
+        self.assertTrue(first_dispatch)
+        self.assertFalse(second_dispatch)
+        mock_start_background_task.assert_called_once_with('om_dup', 'same message')
+
+    @patch('home.feishu_utils._start_background_task')
+    def test_old_message_id_is_evictable_after_100_entries(self, mock_start_background_task):
+        first_payload = self._build_feishu_message_payload(message_id='om_oldest', text='first')
+        self.assertTrue(feishu_utils.process_feishu_event(first_payload))
+
+        for index in range(1, feishu_utils.MAX_RECENT_MESSAGE_IDS + 1):
+            payload = self._build_feishu_message_payload(
+                message_id=f'om_{index}',
+                text=f'message {index}'
+            )
+            self.assertTrue(feishu_utils.process_feishu_event(payload))
+
+        recycled_payload = self._build_feishu_message_payload(message_id='om_oldest', text='first again')
+        self.assertTrue(feishu_utils.process_feishu_event(recycled_payload))
+        self.assertEqual(mock_start_background_task.call_count, feishu_utils.MAX_RECENT_MESSAGE_IDS + 2)
 
     def test_get_request_reports_ready(self):
         response = self.client.get('/robot/feishu')
@@ -204,22 +235,7 @@ class FeishuWebhookViewTestCase(TestCase):
 
     @patch('home.views.process_feishu_event')
     def test_event_callback_uses_dedicated_endpoint(self, mock_process_feishu_event):
-        payload = {
-            'schema': '2.0',
-            'header': {
-                'app_id': 'cli_a9255c608ff95cef',
-                'token': 'x6pyZiEINLzSiUCQKbvmEgl7hIp3ItUv',
-                'event_type': 'im.message.receive_v1'
-            },
-            'event': {
-                'message': {
-                    'message_type': 'text',
-                    'message_id': 'om_test',
-                    'chat_type': 'p2p',
-                    'content': json.dumps({'text': 'hello'})
-                }
-            }
-        }
+        payload = self._build_feishu_message_payload()
 
         response = self.client.post(
             '/robot/feishu',

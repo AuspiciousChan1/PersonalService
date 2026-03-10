@@ -1,4 +1,5 @@
 # home/feishu_utils.py
+from collections import deque
 import json
 import threading
 import requests
@@ -13,7 +14,33 @@ FEISHU_APP_ID = 'cli_a9255c608ff95cef'
 FEISHU_APP_SECRET = 'nftmtZsZ9dIpaI2Glh7M4cp3fWM7PikW'
 FEISHU_VERIFICATION_TOKEN = 'x6pyZiEINLzSiUCQKbvmEgl7hIp3ItUv'
 FEISHU_API_URL = "https://open.feishu.cn/open-apis"
+MAX_RECENT_MESSAGE_IDS = 100
 agent = TaskAgent(ai_type=AiType.DEEPSEEK)
+_recent_message_ids = deque()
+_recent_message_id_set = set()
+_recent_message_lock = threading.Lock()
+
+
+def _remember_message_id(message_id: str) -> bool:
+    """Remember the latest 100 message_ids and return False for duplicates."""
+    with _recent_message_lock:
+        if message_id in _recent_message_id_set:
+            return False
+
+        if len(_recent_message_ids) >= MAX_RECENT_MESSAGE_IDS:
+            expired_message_id = _recent_message_ids.popleft()
+            _recent_message_id_set.discard(expired_message_id)
+
+        _recent_message_ids.append(message_id)
+        _recent_message_id_set.add(message_id)
+        return True
+
+
+def _clear_recent_message_ids() -> None:
+    """Reset the in-memory message id cache. Intended for tests."""
+    with _recent_message_lock:
+        _recent_message_ids.clear()
+        _recent_message_id_set.clear()
 
 
 def _run_task_agent_and_reply(message_id: str, text_content: str) -> None:
@@ -116,6 +143,9 @@ def process_feishu_event(payload: dict) -> bool:
                 is_mentioned = chat_type == 'p2p' or (chat_type == 'group' and mentions)
                 
                 if is_mentioned and message_id and text_content.strip():
+                    if not _remember_message_id(message_id):
+                        print(f"Duplicate Feishu message ignored: {message_id}")
+                        return False
                     _start_background_task(message_id, text_content)
                     return True
 
