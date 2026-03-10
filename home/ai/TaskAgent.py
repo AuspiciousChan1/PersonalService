@@ -12,7 +12,7 @@ def _run_python_sandbox(code):
     """
     模拟 Python 沙箱执行
     """
-    print(f"  [Python] 执行 code: {code[:1000]}...")
+    print(f"  [Python] 执行 code: {code}...")
 
     output_buffer = io.StringIO()
     try:
@@ -68,7 +68,7 @@ class TaskAgent:
             print(f"达到最大深度 {self.max_depth}，停止拆解。")
             return {"plan": []}
 
-        print(f"层级 {current_depth}: 正在拆解任务 -> {request_text[:30]}...")
+        print(f"层级 {current_depth}: 正在拆解任务 -> {request_text}...")
         llm_response = self.call_deepseek(request_text, system_prompt=Constants.SYSTEM_PROMPT_PLANNER, think=True)
 
         try:
@@ -87,7 +87,7 @@ class TaskAgent:
         1. 简单错误 -> 修复代码
         2. 环境/依赖错误 -> 生成补救计划 (Re-planning)
         """
-        print(f"  [Failure Handler] 任务失败，正在分析原因并制定对策... 错误: {error_msg[:100]}...")
+        print(f"  [Failure Handler] 任务失败，正在分析原因并制定对策... 错误: {error_msg}...")
 
         if current_depth > self.max_depth + 2:  # 防止无限递归修复
             return f"Failure recovery failed: Max depth exceeded. Original error: {error_msg}"
