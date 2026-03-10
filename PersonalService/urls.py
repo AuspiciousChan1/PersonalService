@@ -24,5 +24,6 @@ from home import views as home_views
 
 urlpatterns = [
     path('', home_views.home, name='home'),
+    path('robot/feishu', home_views.feishu, name='robot_feishu'),
     path('admin/', admin.site.urls),
 ]

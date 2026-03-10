@@ -2,7 +2,6 @@
 #
 # This file contains the views for the home app. Views are responsible for processing user requests
 # and returning responses, such as rendering a template or returning JSON data.
-from django.shortcuts import render
 from django.http import JsonResponse, HttpResponse, HttpRequest
 from django.views.decorators.csrf import csrf_exempt
 from .models import VisitorLog
@@ -112,12 +111,8 @@ def process_feishu_event(payload: dict):
                 print("Failed to parse message content")
 
 
-@csrf_exempt
-def home(request: HttpRequest) -> HttpResponse:
-    """
-    Home page view that handles general requests and Feishu webhooks.
-    """
-    # Record visitor information for all requests
+def log_visitor(request: HttpRequest) -> None:
+    """Record visitor information for all requests."""
     VisitorLog.objects.create(
         ip_address=get_client_ip(request),
         user_agent=request.META.get('HTTP_USER_AGENT', ''),
@@ -125,35 +120,51 @@ def home(request: HttpRequest) -> HttpResponse:
         method=request.method
     )
 
-    # --- Handle Feishu Webhooks (POST requests with JSON) ---
+
+@csrf_exempt
+def feishu(request: HttpRequest) -> HttpResponse:
+    """Dedicated Feishu webhook endpoint."""
+    log_visitor(request)
+
+    if request.method != 'POST':
+        return JsonResponse({'code': 200, 'msg': 'Feishu webhook is ready'})
+
+    if not request.content_type or 'application/json' not in request.content_type:
+        return JsonResponse({'code': 400, 'msg': 'Content-Type must be application/json'}, status=400)
+
+    try:
+        data = json.loads(request.body.decode('utf-8'))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({'code': 400, 'msg': 'Invalid JSON'}, status=400)
+
+    if data.get('schema') == '2.0':
+        received_token = data.get('token') or data.get('header', {}).get('token')
+        if received_token != FEISHU_VERIFICATION_TOKEN:
+            print(f"Verification Token mismatch! Expected: {FEISHU_VERIFICATION_TOKEN}, Got: {received_token}")
+            return JsonResponse({'code': 403, 'msg': 'Verification Token mismatch'}, status=403)
+
+    if data.get('type') == 'url_verification':
+        return JsonResponse({'challenge': data.get('challenge')})
+
+    if 'header' in data and data['header'].get('app_id') == FEISHU_APP_ID:
+        process_feishu_event(data)
+        return JsonResponse({'code': 200, 'msg': 'Event received successfully'})
+
+    return JsonResponse({'code': 400, 'msg': 'Unsupported request'}, status=400)
+
+
+@csrf_exempt
+def home(request: HttpRequest) -> HttpResponse:
+    """
+    Home page view that handles general requests.
+    """
+    log_visitor(request)
+
     if request.method == 'POST' and request.content_type and 'application/json' in request.content_type:
         try:
-            data = json.loads(request.body.decode('utf-8'))
+            params = json.loads(request.body.decode('utf-8'))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return JsonResponse({'code': 400, 'msg': 'Invalid JSON'}, status=400)
-
-        # --- Security Check for requests without encryption ---
-        # The token is present in both url_verification and event_callback payloads
-        if data.get('schema') == '2.0':
-            # For url_verification, token is at the top level. For events, it's in the header.
-            received_token = data.get('token') or data.get('header', {}).get('token')
-            if received_token != FEISHU_VERIFICATION_TOKEN:
-                print(f"Verification Token mismatch! Expected: {FEISHU_VERIFICATION_TOKEN}, Got: {received_token}")
-                return JsonResponse({'code': 403, 'msg': 'Verification Token mismatch'}, status=403)
-
-        # 1. Handle Feishu's URL Verification Challenge
-        if data.get('type') == 'url_verification':
-            return JsonResponse({'challenge': data.get('challenge')})
-
-        # 2. Handle Feishu Event Callbacks
-        if 'header' in data and data['header'].get('app_id') == FEISHU_APP_ID:
-            process_feishu_event(data)
-            return JsonResponse({'code': 200, 'msg': 'Event received successfully'})
-        
-        # If it's a JSON POST but not from Feishu, treat it as a generic request
-        params = data
-    
-    # --- Handle other requests (GET, form-data, etc.) ---
     else:
         params = request.GET.dict() if request.method == 'GET' else dict(request.POST.items())
 

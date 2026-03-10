@@ -5,6 +5,7 @@
 from django.test import TestCase, Client
 from .models import VisitorLog
 import json
+from unittest.mock import patch
 
 
 class HomeViewTestCase(TestCase):
@@ -112,4 +113,99 @@ class HomeViewTestCase(TestCase):
         self.assertEqual(data['params']['key'], 'value')
         self.assertEqual(data['params']['data'], 'test')
 
+    def test_post_json_request_returns_payload(self):
+        """Test that JSON POST requests on home stay generic."""
+        response = self.client.post(
+            '/',
+            data=json.dumps({'source': 'home', 'value': 1}),
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 200)
 
+        data = json.loads(response.content)
+        self.assertEqual(data['code'], 200)
+        self.assertEqual(data['params']['source'], 'home')
+        self.assertEqual(data['params']['value'], 1)
+
+
+class FeishuWebhookViewTestCase(TestCase):
+    """Test cases for the dedicated Feishu webhook endpoint"""
+
+    def setUp(self):
+        self.client = Client()
+
+    def test_get_request_reports_ready(self):
+        response = self.client.get('/robot/feishu')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/json')
+
+        data = json.loads(response.content)
+        self.assertEqual(data['msg'], 'Feishu webhook is ready')
+
+        log = VisitorLog.objects.latest('timestamp')
+        self.assertEqual(log.path, '/robot/feishu')
+        self.assertEqual(log.method, 'GET')
+
+    def test_url_verification_challenge(self):
+        payload = {
+            'schema': '2.0',
+            'type': 'url_verification',
+            'token': 'x6pyZiEINLzSiUCQKbvmEgl7hIp3ItUv',
+            'challenge': 'challenge-value'
+        }
+
+        response = self.client.post(
+            '/robot/feishu',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content), {'challenge': 'challenge-value'})
+
+    def test_rejects_invalid_token(self):
+        payload = {
+            'schema': '2.0',
+            'type': 'url_verification',
+            'token': 'invalid-token',
+            'challenge': 'challenge-value'
+        }
+
+        response = self.client.post(
+            '/robot/feishu',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 403)
+
+    @patch('home.views.process_feishu_event')
+    def test_event_callback_uses_dedicated_endpoint(self, mock_process_feishu_event):
+        payload = {
+            'schema': '2.0',
+            'header': {
+                'app_id': 'cli_a9255c608ff95cef',
+                'token': 'x6pyZiEINLzSiUCQKbvmEgl7hIp3ItUv',
+                'event_type': 'im.message.receive_v1'
+            },
+            'event': {
+                'message': {
+                    'message_type': 'text',
+                    'message_id': 'om_test',
+                    'chat_type': 'p2p',
+                    'content': json.dumps({'text': 'hello'})
+                }
+            }
+        }
+
+        response = self.client.post(
+            '/robot/feishu',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content)['msg'], 'Event received successfully')
+        mock_process_feishu_event.assert_called_once_with(payload)
+
+    def test_rejects_non_json_post(self):
+        response = self.client.post('/robot/feishu', data={'foo': 'bar'})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(json.loads(response.content)['msg'], 'Content-Type must be application/json')
