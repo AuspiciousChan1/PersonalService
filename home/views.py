@@ -7,11 +7,8 @@ from django.views.decorators.csrf import csrf_exempt
 from .models import VisitorLog
 import json
 from typing import Optional
-from .feishu_utils import (
-    FEISHU_APP_ID,
-    FEISHU_VERIFICATION_TOKEN,
-    process_feishu_event
-)
+from PersonalService.app_params import FEISHU_APP_ID, FEISHU_VERIFICATION_TOKEN
+from .feishu_utils import process_feishu_event
 
 
 def get_client_ip(request: HttpRequest) -> Optional[str]:
@@ -61,7 +58,7 @@ def feishu(request: HttpRequest) -> HttpResponse:
     if data.get('schema') == '2.0':
         received_token = data.get('header', {}).get('token')
         if received_token != FEISHU_VERIFICATION_TOKEN:
-            print(f"Verification Token mismatch! Expected: {FEISHU_VERIFICATION_TOKEN}, Got: {received_token}")
+            print(f'Verification token mismatch for incoming Feishu request.')
             return JsonResponse({'code': 403, 'msg': 'Verification Token mismatch'}, status=403)
 
     if 'header' in data and data['header'].get('app_id') == FEISHU_APP_ID:

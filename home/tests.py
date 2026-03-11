@@ -8,6 +8,8 @@ from . import feishu_utils
 import json
 from unittest.mock import patch
 
+from PersonalService.app_params import FEISHU_APP_ID, FEISHU_VERIFICATION_TOKEN
+
 
 class HomeViewTestCase(TestCase):
     """Test cases for the home view"""
@@ -140,8 +142,8 @@ class FeishuWebhookViewTestCase(TestCase):
         return {
             'schema': '2.0',
             'header': {
-                'app_id': 'cli_a9255c608ff95cef',
-                'token': 'x6pyZiEINLzSiUCQKbvmEgl7hIp3ItUv',
+                'app_id': FEISHU_APP_ID,
+                'token': FEISHU_VERIFICATION_TOKEN,
                 'event_type': 'im.message.receive_v1'
             },
             'event': {
@@ -220,7 +222,7 @@ class FeishuWebhookViewTestCase(TestCase):
         payload = {
             'schema': '2.0',
             'type': 'url_verification',
-            'token': 'x6pyZiEINLzSiUCQKbvmEgl7hIp3ItUv',
+            'token': FEISHU_VERIFICATION_TOKEN,
             'challenge': 'challenge-value'
         }
 

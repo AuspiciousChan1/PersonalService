@@ -1,8 +1,13 @@
 import enum
+from typing import Any, cast
 
 from openai import OpenAI
-
-DEEPSEEK_API_KEY = "sk-e0c105badff24bdc8f89efa12e7bbb7d"
+from PersonalService.app_params import (
+    DEEPSEEK_API_BASE_URL,
+    DEEPSEEK_API_KEY,
+    DEEPSEEK_CHAT_MODEL,
+    DEEPSEEK_REASONER_MODEL,
+)
 
 class AiType(enum.Enum):
     DEEPSEEK = 0, DEEPSEEK_API_KEY
@@ -16,18 +21,21 @@ class AiApi(object):
 class _DeepSeekApi(AiApi):
     def __init__(self, api_key):
         self.api_key = api_key
-        self.base_url = "https://api.deepseek.com/v1"
+        self.base_url = DEEPSEEK_API_BASE_URL
         self.client: OpenAI = OpenAI(
             api_key=self.api_key,
             base_url=self.base_url)
 
     def query(self, query: str, system_prompt="You are a helpful assistant", think: bool = True) -> str:
-        response = self.client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": query},
-            ],
-            model='deepseek-reasoner' if think else 'deepseek-chat',
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": query},
+        ]
+        create_completion = self.client.chat.completions.create()
+        # noinspection PyTypeChecker
+        response = create_completion(
+            messages=messages,
+            model=DEEPSEEK_REASONER_MODEL if think else DEEPSEEK_CHAT_MODEL,
             stream=False
         )
 

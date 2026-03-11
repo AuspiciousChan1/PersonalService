@@ -7,13 +7,12 @@ from typing import Optional
 
 from home.ai.AiApi import AiType
 from home.ai.TaskAgent import TaskAgent
+from PersonalService.app_params import (
+    FEISHU_API_URL,
+    FEISHU_APP_ID,
+    FEISHU_APP_SECRET,
+)
 
-# --- Feishu App Constants ---
-# App Name: MessageRobot
-FEISHU_APP_ID = 'cli_a9255c608ff95cef'
-FEISHU_APP_SECRET = 'nftmtZsZ9dIpaI2Glh7M4cp3fWM7PikW'
-FEISHU_VERIFICATION_TOKEN = 'x6pyZiEINLzSiUCQKbvmEgl7hIp3ItUv'
-FEISHU_API_URL = "https://open.feishu.cn/open-apis"
 MAX_RECENT_MESSAGE_IDS = 100
 agent = TaskAgent(ai_type=AiType.DEEPSEEK)
 _recent_message_ids = deque()
